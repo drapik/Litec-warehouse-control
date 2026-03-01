@@ -5,6 +5,17 @@
     android:layout_height="match_parent"
     android:background="#111827">
 
+    <TextView
+        android:id="@+id/releaseNoteText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="20dp"
+        android:layout_marginTop="24dp"
+        android:layout_marginEnd="20dp"
+        android:text="@string/release_note"
+        android:textColor="#D1FAE5"
+        android:textSize="14sp" />
+
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
