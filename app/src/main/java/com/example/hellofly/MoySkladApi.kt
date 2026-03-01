@@ -12,7 +12,7 @@ import java.nio.charset.StandardCharsets
 class MoySkladApi {
 
     fun verifyCredentials(authHeader: String) {
-        val response = executeGet("$BASE_URL/customerorder?limit=1", authHeader)
+        val response = executeGet(AUTH_CHECK_URL, authHeader)
         if (response.code in 200..299) {
             return
         }
@@ -24,7 +24,7 @@ class MoySkladApi {
         var offset = 0
 
         while (true) {
-            val response = executeGet("$BASE_URL/customerorder?limit=$PAGE_SIZE&offset=$offset", authHeader)
+            val response = executeGet("$CUSTOMER_ORDER_URL?limit=$PAGE_SIZE&offset=$offset", authHeader)
             if (response.code !in 200..299) {
                 throw mapToException(response)
             }
@@ -57,7 +57,7 @@ class MoySkladApi {
         connection.requestMethod = "GET"
         connection.connectTimeout = TIMEOUT_MS
         connection.readTimeout = TIMEOUT_MS
-        connection.setRequestProperty("Accept", "application/json")
+        connection.setRequestProperty("Accept", ACCEPT_HEADER_VALUE)
         connection.setRequestProperty("Authorization", authHeader)
 
         return try {
@@ -106,7 +106,10 @@ class MoySkladApi {
     }
 
     companion object {
-        private const val BASE_URL = "https://api.moysklad.ru/api/remap/1.2/entity"
+        private const val API_ROOT = "https://api.moysklad.ru/api/remap/1.2"
+        private const val AUTH_CHECK_URL = "$API_ROOT/context/employee"
+        private const val CUSTOMER_ORDER_URL = "$API_ROOT/entity/customerorder"
+        private const val ACCEPT_HEADER_VALUE = "application/json;charset=utf-8"
         private const val PAGE_SIZE = 100
         private const val TIMEOUT_MS = 15_000
 

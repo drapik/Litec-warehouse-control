@@ -3,6 +3,15 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+def releaseSigningProps = new Properties()
+def releaseSigningFile = rootProject.file("keystore/release-signing.properties")
+def hasReleaseSigning = releaseSigningFile.exists()
+if (hasReleaseSigning) {
+    releaseSigningFile.withInputStream { stream ->
+        releaseSigningProps.load(stream)
+    }
+}
+
 android {
     namespace 'com.example.hellofly'
     compileSdk 34
@@ -11,18 +20,32 @@ android {
         applicationId "com.example.hellofly"
         minSdk 24
         targetSdk 34
-        versionCode 3
-        versionName "3.0"
+        versionCode 4
+        versionName "4.0"
 
         buildConfigField "String", "GITHUB_OWNER", '"drapik"'
         buildConfigField "String", "GITHUB_REPO", '"Litec-warehouse-control"'
         buildConfigField "String", "APK_ASSET_NAME", '"LITEC.apk"'
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            release {
+                storeFile rootProject.file(releaseSigningProps.getProperty("storeFile"))
+                storePassword releaseSigningProps.getProperty("storePassword")
+                keyAlias releaseSigningProps.getProperty("keyAlias")
+                keyPassword releaseSigningProps.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            }
         }
     }
 
