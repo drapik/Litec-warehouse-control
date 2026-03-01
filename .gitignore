@@ -1,0 +1,12 @@
+.gradle/
+local.properties
+**/build/
+.idea/
+*.iml
+.DS_Store
+captures/
+.externalNativeBuild/
+.cxx/
+
+# toolchain and local artifacts (outside repo root normally)
+*.apk
