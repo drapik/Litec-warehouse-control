@@ -1,20 +1,19 @@
-# LITEC (Android)
+# LITEC (Android TSD)
 
-Приложение с кнопкой `Spawn Hello World` и автообновлением через GitHub Releases.
+Приложение для ТСД с базовым потоком:
 
-## Как работает обновление
+1. Вход в МойСклад (логин/пароль).
+2. Сохранение сессии в SQLite, чтобы не авторизовываться каждый запуск.
+3. Кнопка `Проверить обновление` доступна на экране входа и в меню.
+4. Меню с кнопкой `Заказы клиентов` и кнопкой `Выход`.
+5. Загрузка и показ списка заказов клиентов из МойСклад.
 
-1. Приложение делает запрос в `releases/latest`:
-   `https://api.github.com/repos/drapik/LITEC/releases/latest`
-2. Сравнивает `tag_name` с текущим `versionCode` приложения.
-3. Если версия новее, скачивает APK asset (по умолчанию `LITEC.apk`).
-4. Запускает системный экран установки APK поверх текущего приложения.
+## Технически
 
-## Важные правила релиза
-
-- `tag_name` должен быть в формате `v<number>`, например `v2`, `v3`.
-- В релизе должен быть APK asset `LITEC.apk` (или любой `.apk`, но лучше именно это имя).
-- APK должен быть подписан тем же ключом, что и установленная версия, иначе обновление не установится.
+- API: `https://api.moysklad.ru/api/remap/1.2/entity/customerorder`
+- Авторизация: HTTP Basic (`login:password`)
+- Локальное хранение сессии: SQLite (`SessionDbHelper`)
+- Автообновление: GitHub Releases (`releases/latest`) + `DownloadManager` + `FileProvider`
 
 ## Сборка
 
@@ -22,5 +21,4 @@
 ./gradlew assembleDebug
 ```
 
-APK:
-`app/build/outputs/apk/debug/app-debug.apk`
+APK: `app/build/outputs/apk/debug/app-debug.apk`

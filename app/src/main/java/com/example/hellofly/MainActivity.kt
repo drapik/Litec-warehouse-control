@@ -6,16 +6,19 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.content.pm.PackageManager
 import android.database.Cursor
-import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
+import android.view.View
+import android.widget.ArrayAdapter
 import android.widget.Button
-import android.widget.FrameLayout
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.ListView
+import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -25,16 +28,40 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
-import kotlin.random.Random
+import java.util.Locale
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var floatingContainer: FrameLayout
-    private lateinit var spawnButton: Button
-    private lateinit var updateButton: Button
+    private lateinit var sessionDbHelper: SessionDbHelper
+    private val moySkladApi = MoySkladApi()
+    private val ioExecutor: ExecutorService = Executors.newSingleThreadExecutor()
 
+    private lateinit var loginContainer: LinearLayout
+    private lateinit var menuContainer: LinearLayout
+    private lateinit var loginEditText: EditText
+    private lateinit var passwordEditText: EditText
+    private lateinit var loginButton: Button
+    private lateinit var loginUpdateButton: Button
+    private lateinit var loginProgress: ProgressBar
+    private lateinit var loginErrorText: TextView
+    private lateinit var sessionInfoText: TextView
+    private lateinit var customerOrdersButton: Button
+    private lateinit var menuUpdateButton: Button
+    private lateinit var logoutButton: Button
+    private lateinit var ordersProgress: ProgressBar
+    private lateinit var ordersStatusText: TextView
+    private lateinit var ordersListView: ListView
+
+    private val orderLines = mutableListOf<String>()
+    private lateinit var ordersAdapter: ArrayAdapter<String>
+
+    private var currentSession: StoredSession? = null
     private lateinit var downloadManager: DownloadManager
     private var downloadId: Long = -1L
+    private var isUpdateInProgress = false
+    private var isDownloadReceiverRegistered = false
 
     private val downloadReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -49,73 +76,172 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        floatingContainer = findViewById(R.id.floatingContainer)
-        spawnButton = findViewById(R.id.spawnButton)
-        updateButton = findViewById(R.id.updateButton)
+        sessionDbHelper = SessionDbHelper(this)
         downloadManager = getSystemService(DOWNLOAD_SERVICE) as DownloadManager
+        bindViews()
+        setupInteractions()
 
-        spawnButton.setOnClickListener {
-            spawnFlyingText()
-        }
+        ordersAdapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, orderLines)
+        ordersListView.adapter = ordersAdapter
 
-        updateButton.setOnClickListener {
-            checkForUpdates()
+        currentSession = sessionDbHelper.getSession()
+        if (currentSession == null) {
+            showLogin()
+        } else {
+            showMenu(currentSession!!.login)
         }
     }
 
     override fun onStart() {
         super.onStart()
-        val filter = IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(downloadReceiver, filter, RECEIVER_NOT_EXPORTED)
-        } else {
-            @Suppress("DEPRECATION")
-            registerReceiver(downloadReceiver, filter)
-        }
+        registerDownloadReceiverIfNeeded()
     }
 
     override fun onStop() {
         super.onStop()
-        unregisterReceiver(downloadReceiver)
+        unregisterDownloadReceiverIfNeeded()
     }
 
-    private fun spawnFlyingText() {
-        val textView = TextView(this).apply {
-            text = getString(R.string.hello_world)
-            textSize = 24f
-            setTextColor(randomBrightColor())
-            alpha = 1f
+    override fun onDestroy() {
+        ioExecutor.shutdown()
+        sessionDbHelper.close()
+        super.onDestroy()
+    }
+
+    private fun bindViews() {
+        loginContainer = findViewById(R.id.loginContainer)
+        menuContainer = findViewById(R.id.menuContainer)
+        loginEditText = findViewById(R.id.loginEditText)
+        passwordEditText = findViewById(R.id.passwordEditText)
+        loginButton = findViewById(R.id.loginButton)
+        loginUpdateButton = findViewById(R.id.loginUpdateButton)
+        loginProgress = findViewById(R.id.loginProgress)
+        loginErrorText = findViewById(R.id.loginErrorText)
+        sessionInfoText = findViewById(R.id.sessionInfoText)
+        customerOrdersButton = findViewById(R.id.customerOrdersButton)
+        menuUpdateButton = findViewById(R.id.menuUpdateButton)
+        logoutButton = findViewById(R.id.logoutButton)
+        ordersProgress = findViewById(R.id.ordersProgress)
+        ordersStatusText = findViewById(R.id.ordersStatusText)
+        ordersListView = findViewById(R.id.ordersListView)
+    }
+
+    private fun setupInteractions() {
+        loginButton.setOnClickListener { loginToMoySklad() }
+        customerOrdersButton.setOnClickListener { loadCustomerOrders() }
+        loginUpdateButton.setOnClickListener { checkForUpdates() }
+        menuUpdateButton.setOnClickListener { checkForUpdates() }
+        logoutButton.setOnClickListener { logout() }
+    }
+
+    private fun loginToMoySklad() {
+        val login = loginEditText.text.toString().trim()
+        val password = passwordEditText.text.toString()
+
+        if (login.isBlank() || password.isBlank()) {
+            showLoginError(getString(R.string.login_required))
+            return
         }
 
-        floatingContainer.addView(
-            textView,
-            FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT
-            )
-        )
+        setLoginLoading(true)
+        ioExecutor.execute {
+            try {
+                val authHeader = MoySkladApi.buildBasicAuthHeader(login, password)
+                moySkladApi.verifyCredentials(authHeader)
+                sessionDbHelper.saveSession(login, authHeader)
+                val session = StoredSession(login = login, authHeader = authHeader, createdAt = System.currentTimeMillis())
 
-        floatingContainer.post {
-            val maxX = (floatingContainer.width - textView.measuredWidth).coerceAtLeast(0)
-            val startX = Random.nextInt(0, maxX + 1).toFloat()
-            val startY = (floatingContainer.height - spawnButton.height - dp(24)).toFloat()
-
-            textView.x = startX
-            textView.y = startY
-
-            textView.animate()
-                .translationY(-floatingContainer.height.toFloat() - dp(120))
-                .translationXBy(Random.nextInt(-120, 121).toFloat())
-                .alpha(0f)
-                .setDuration(1600)
-                .withEndAction { floatingContainer.removeView(textView) }
-                .start()
+                runOnUiThread {
+                    currentSession = session
+                    showMenu(login)
+                }
+            } catch (authException: AuthException) {
+                runOnUiThread {
+                    setLoginLoading(false)
+                    showLoginError(authException.message ?: getString(R.string.auth_failed))
+                }
+            } catch (exception: Exception) {
+                runOnUiThread {
+                    setLoginLoading(false)
+                    showLoginError(
+                        getString(
+                            R.string.login_error_template,
+                            exception.message ?: getString(R.string.error_unknown)
+                        )
+                    )
+                }
+            }
         }
+    }
+
+    private fun loadCustomerOrders() {
+        val session = currentSession
+        if (session == null) {
+            showLogin(getString(R.string.session_expired))
+            return
+        }
+
+        setOrdersLoading(true)
+        ioExecutor.execute {
+            try {
+                val orders = moySkladApi.fetchAllCustomerOrders(session.authHeader)
+                val renderedOrders = orders.mapIndexed { index, order -> renderOrderLine(index, order) }
+
+                runOnUiThread {
+                    setOrdersLoading(false)
+                    orderLines.clear()
+                    orderLines.addAll(renderedOrders)
+                    ordersAdapter.notifyDataSetChanged()
+
+                    ordersStatusText.text = if (renderedOrders.isEmpty()) {
+                        getString(R.string.orders_empty)
+                    } else {
+                        getString(R.string.orders_loaded_count, renderedOrders.size)
+                    }
+                }
+            } catch (authException: AuthException) {
+                sessionDbHelper.clearSession()
+                currentSession = null
+                runOnUiThread {
+                    setOrdersLoading(false)
+                    showLogin(authException.message ?: getString(R.string.session_expired))
+                }
+            } catch (exception: Exception) {
+                runOnUiThread {
+                    setOrdersLoading(false)
+                    ordersStatusText.text = getString(
+                        R.string.orders_load_error_template,
+                        exception.message ?: getString(R.string.error_unknown)
+                    )
+                }
+            }
+        }
+    }
+
+    private fun logout() {
+        sessionDbHelper.clearSession()
+        currentSession = null
+        orderLines.clear()
+        ordersAdapter.notifyDataSetChanged()
+        showLogin(getString(R.string.logout_done))
+    }
+
+    private fun renderOrderLine(index: Int, order: CustomerOrder): String {
+        val number = order.name.ifBlank { getString(R.string.order_number_missing) }
+        val agent = order.agentName?.takeIf { it.isNotBlank() } ?: getString(R.string.order_agent_missing)
+        val moment = order.moment.ifBlank { "-" }
+        val amount = String.format(Locale.US, "%.2f", order.sum / 100.0)
+        return "${index + 1}. $number | $agent | $moment | $amount"
     }
 
     private fun checkForUpdates() {
-        updateButton.isEnabled = false
-        updateButton.text = "Проверяем..."
+        if (isUpdateInProgress) {
+            return
+        }
+
+        isUpdateInProgress = true
+        setUpdateButtonsEnabled(false)
+        setUpdateButtonsText(getString(R.string.update_checking))
 
         Thread {
             try {
@@ -124,20 +250,24 @@ class MainActivity : AppCompatActivity() {
                     if (latest.versionCode > BuildConfig.VERSION_CODE) {
                         Toast.makeText(
                             this,
-                            "Найдена версия ${latest.versionCode}. Скачиваем...",
+                            getString(R.string.update_found_template, latest.versionCode),
                             Toast.LENGTH_LONG
                         ).show()
                         startApkDownload(latest.apkUrl)
                     } else {
-                        updateButton.isEnabled = true
-                        updateButton.text = "Обновлений нет"
+                        isUpdateInProgress = false
+                        setUpdateButtonsEnabled(true)
+                        setUpdateButtonsText(getString(R.string.update_no_updates))
                     }
                 }
-            } catch (e: Exception) {
+            } catch (exception: Exception) {
                 runOnUiThread {
-                    updateButton.isEnabled = true
-                    updateButton.text = "Ошибка обновления"
-                    Toast.makeText(this, "Ошибка: ${e.message}", Toast.LENGTH_LONG).show()
+                    failUpdate(
+                        getString(
+                            R.string.update_error_template,
+                            exception.message ?: getString(R.string.error_unknown)
+                        )
+                    )
                 }
             }
         }.start()
@@ -172,13 +302,14 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        val url = apkUrl ?: throw IllegalStateException("APK asset не найден в релизе")
-        return ReleaseInfo(versionCode, url)
+        val resolvedUrl = apkUrl ?: throw IllegalStateException("APK asset не найден в релизе")
+        return ReleaseInfo(versionCode = versionCode, apkUrl = resolvedUrl)
     }
 
     private fun parseVersionCode(tag: String): Int {
         val numeric = tag.trim().removePrefix("v").takeWhile { it.isDigit() }
-        return numeric.toIntOrNull() ?: throw IllegalStateException("Неверный tag_name: $tag. Нужен формат v2, v3...")
+        return numeric.toIntOrNull()
+            ?: throw IllegalStateException("Неверный tag_name: $tag. Ожидается формат v2, v3...")
     }
 
     private fun startApkDownload(apkUrl: String) {
@@ -186,13 +317,17 @@ class MainActivity : AppCompatActivity() {
             setTitle("LITEC update")
             setDescription("Скачивание новой версии")
             setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-            setDestinationInExternalFilesDir(this@MainActivity, Environment.DIRECTORY_DOWNLOADS, BuildConfig.APK_ASSET_NAME)
+            setDestinationInExternalFilesDir(
+                this@MainActivity,
+                Environment.DIRECTORY_DOWNLOADS,
+                BuildConfig.APK_ASSET_NAME
+            )
             setAllowedOverMetered(true)
             setAllowedOverRoaming(true)
         }
 
         downloadId = downloadManager.enqueue(request)
-        updateButton.text = "Скачиваем..."
+        setUpdateButtonsText(getString(R.string.update_downloading))
     }
 
     private fun handleDownloadComplete(id: Long) {
@@ -200,22 +335,23 @@ class MainActivity : AppCompatActivity() {
         val cursor: Cursor = downloadManager.query(query)
         cursor.use {
             if (!it.moveToFirst()) {
-                failUpdate("Не удалось прочитать статус загрузки")
+                failUpdate(getString(R.string.update_download_status_error))
                 return
             }
             val statusIndex = it.getColumnIndex(DownloadManager.COLUMN_STATUS)
             val status = it.getInt(statusIndex)
             if (status != DownloadManager.STATUS_SUCCESSFUL) {
-                failUpdate("Загрузка не завершилась")
+                failUpdate(getString(R.string.update_download_failed))
                 return
             }
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()) {
-            Toast.makeText(this, "Разреши установку из этого приложения и нажми обновить снова", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, getString(R.string.update_permission_toast), Toast.LENGTH_LONG).show()
             startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
-            updateButton.isEnabled = true
-            updateButton.text = "Нужно разрешение"
+            isUpdateInProgress = false
+            setUpdateButtonsEnabled(true)
+            setUpdateButtonsText(getString(R.string.update_permission_needed))
             return
         }
 
@@ -226,12 +362,12 @@ class MainActivity : AppCompatActivity() {
         val apkFile = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
             ?.resolve(BuildConfig.APK_ASSET_NAME)
             ?: run {
-                failUpdate("APK файл не найден")
+                failUpdate(getString(R.string.update_apk_not_found))
                 return
             }
 
         if (!apkFile.exists()) {
-            failUpdate("APK файл не найден")
+            failUpdate(getString(R.string.update_apk_not_found))
             return
         }
 
@@ -244,26 +380,104 @@ class MainActivity : AppCompatActivity() {
 
         try {
             startActivity(intent)
-            updateButton.isEnabled = true
-            updateButton.text = "Установка запущена"
-        } catch (e: ActivityNotFoundException) {
-            failUpdate("Не найден установщик пакетов")
+            isUpdateInProgress = false
+            setUpdateButtonsEnabled(true)
+            setUpdateButtonsText(getString(R.string.update_install_started))
+        } catch (_: ActivityNotFoundException) {
+            failUpdate(getString(R.string.update_installer_missing))
         }
     }
 
     private fun failUpdate(message: String) {
-        updateButton.isEnabled = true
-        updateButton.text = "Проверить обновление"
+        isUpdateInProgress = false
+        setUpdateButtonsEnabled(true)
+        setUpdateButtonsText(getString(R.string.update_button))
         Toast.makeText(this, message, Toast.LENGTH_LONG).show()
     }
 
-    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+    private fun setUpdateButtonsEnabled(isEnabled: Boolean) {
+        loginUpdateButton.isEnabled = isEnabled
+        menuUpdateButton.isEnabled = isEnabled
+    }
 
-    private fun randomBrightColor(): Int {
-        val r = Random.nextInt(120, 256)
-        val g = Random.nextInt(120, 256)
-        val b = Random.nextInt(120, 256)
-        return Color.rgb(r, g, b)
+    private fun setUpdateButtonsText(text: String) {
+        loginUpdateButton.text = text
+        menuUpdateButton.text = text
+    }
+
+    private fun registerDownloadReceiverIfNeeded() {
+        if (isDownloadReceiverRegistered) {
+            return
+        }
+        val filter = IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(downloadReceiver, filter, RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("DEPRECATION")
+            registerReceiver(downloadReceiver, filter)
+        }
+        isDownloadReceiverRegistered = true
+    }
+
+    private fun unregisterDownloadReceiverIfNeeded() {
+        if (!isDownloadReceiverRegistered) {
+            return
+        }
+        unregisterReceiver(downloadReceiver)
+        isDownloadReceiverRegistered = false
+    }
+
+    private fun setLoginLoading(isLoading: Boolean) {
+        loginButton.isEnabled = !isLoading
+        loginProgress.visibility = if (isLoading) View.VISIBLE else View.GONE
+        if (isLoading) {
+            loginErrorText.visibility = View.GONE
+        }
+    }
+
+    private fun setOrdersLoading(isLoading: Boolean) {
+        customerOrdersButton.isEnabled = !isLoading
+        ordersProgress.visibility = if (isLoading) View.VISIBLE else View.GONE
+        if (isLoading) {
+            ordersStatusText.text = getString(R.string.orders_loading)
+        }
+    }
+
+    private fun showLogin(message: String? = null) {
+        loginContainer.visibility = View.VISIBLE
+        menuContainer.visibility = View.GONE
+        setLoginLoading(false)
+        passwordEditText.text = null
+        if (!isUpdateInProgress) {
+            setUpdateButtonsEnabled(true)
+            setUpdateButtonsText(getString(R.string.update_button))
+        }
+
+        if (message.isNullOrBlank()) {
+            loginErrorText.visibility = View.GONE
+        } else {
+            showLoginError(message)
+        }
+    }
+
+    private fun showLoginError(message: String) {
+        loginErrorText.text = message
+        loginErrorText.visibility = View.VISIBLE
+    }
+
+    private fun showMenu(login: String) {
+        loginContainer.visibility = View.GONE
+        menuContainer.visibility = View.VISIBLE
+
+        sessionInfoText.text = getString(R.string.session_user_template, login)
+        setOrdersLoading(false)
+        ordersStatusText.text = ""
+        orderLines.clear()
+        ordersAdapter.notifyDataSetChanged()
+        if (!isUpdateInProgress) {
+            setUpdateButtonsEnabled(true)
+            setUpdateButtonsText(getString(R.string.update_button))
+        }
     }
 }
 
